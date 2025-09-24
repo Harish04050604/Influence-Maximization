@@ -1,5 +1,4 @@
 
-
 import math, random, time
 import pandas as pd
 import networkx as nx
@@ -72,23 +71,54 @@ for idx, row in tag_df.iterrows():
             for j in range(i+1, len(tags)):
                 add_tag_edge(tags[i], tags[j], w=1)
 
-# Secondary Edge -> connect tags that appear in the same area within a time window
-for area, group in tag_df.groupby(area_col):
+
+
+# Secondary Edge
+
+# Two crimes co-occur in the same AREA NAME on the same DATE OCC
+tag_df['DateOnly'] = pd.to_datetime(tag_df[date_col], errors='coerce').dt.date
+for (area, date), group in tag_df.groupby([area_col, 'DateOnly']):
     tags = group[desc_col].dropna().astype(str).str.strip().unique()
     tags = [t for t in tags if t and t.lower() != 'nan']
     for i in range(len(tags)):
         for j in range(i+1, len(tags)):
             add_tag_edge(tags[i], tags[j], w=1)
 
-# Temporal Edge -> Date time level co-occurrence 
-tag_df['Month'] = pd.to_datetime(tag_df[date_col], errors='coerce').dt.to_period('M')
-for month, group in tag_df.groupby('Month'):
-    if pd.isna(month): continue
-    tags = group[desc_col].dropna().astype(str).str.strip().unique()
-    tags = [t for t in tags if t and t.lower() != 'nan']
-    for i in range(len(tags)):
-        for j in range(i+1, len(tags)):
-            add_tag_edge(tags[i], tags[j], w=1)
+
+# Temporal Edge
+
+# Combine DATE OCC + TIME OCC into a single datetime column
+if "TIME OCC" in df.columns:
+    # Convert TIME OCC (HHMM) into hours + minutes
+    tag_df['TimeOcc'] = pd.to_numeric(df["TIME OCC"], errors='coerce')
+    tag_df['HourOcc'] = tag_df['TimeOcc'].fillna(0).astype(int).astype(str).str.zfill(4).str[:2].astype(int)
+    tag_df['MinuteOcc'] = tag_df['TimeOcc'].fillna(0).astype(int).astype(str).str.zfill(4).str[2:].astype(int)
+
+    tag_df['DateTimeOcc'] = pd.to_datetime(tag_df[date_col], errors='coerce')
+    tag_df['DateTimeOcc'] = tag_df['DateTimeOcc'] + \
+                            pd.to_timedelta(tag_df['HourOcc'], unit='h') + \
+                            pd.to_timedelta(tag_df['MinuteOcc'], unit='m')
+
+    time_window_hours = 1  # configurable
+
+    for area, group in tag_df.groupby(area_col):
+        group = group.dropna(subset=['DateTimeOcc'])
+        group = group[['DateTimeOcc', desc_col]].dropna().sort_values('DateTimeOcc')
+
+        times = group['DateTimeOcc'].tolist()
+        tags = group[desc_col].astype(str).str.strip().tolist()
+
+        # sliding window to avoid O(n^2)
+        j = 0
+        for i in range(len(times)):
+            while j < len(times) and (times[j] - times[i]).total_seconds() <= time_window_hours * 3600:
+                if i != j:
+                    add_tag_edge(tags[i], tags[j], w=1)
+                j += 1
+else:
+    print("TIME OCC column not found — skipping temporal edges")
+
+
 
 # Make sure isolated tags (if any) are included as nodes
 for t in tag_df[desc_col].dropna().astype(str).str.strip().unique():
